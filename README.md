@@ -6,7 +6,7 @@ Official implementation of 'Out-of-domain GAN inversion via Invertibility Decomp
 <div align=center>
 <img src="teaser.png" width="70%"/>  
   
-The application of 6K image rescaling in the context of cloud photo storage on smartphones (e.g., iCloud). 
+Out-of-domain GAN inversion and attribute manipulation. 
 </div>
 
 ## 🎏 Abstract
