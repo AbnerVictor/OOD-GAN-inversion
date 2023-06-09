@@ -28,10 +28,10 @@ Coming soon!
 ## 📍 Citation 
 
 ```
-@misc{yang2022photorealistic,
-      title={Photo-Realistic Out-of-domain GAN inversion via Invertibility Decomposition}, 
+@misc{yang2023outofdomain,
+      title={Out-of-domain GAN inversion via Invertibility Decomposition for Photo-Realistic Human Face Manipulation}, 
       author={Xin Yang and Xiaogang Xu and Yingcong Chen},
-      year={2022},
+      year={2023},
       eprint={2212.09262},
       archivePrefix={arXiv},
       primaryClass={cs.CV}
