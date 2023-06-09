@@ -23,6 +23,7 @@ In this paper, we propose a novel framework that enhances the fidelity of human 
 
 - [ ] Release the training and inference codes
 - [ ] Release the guidance documents for manipulation
+
 Coming soon!
 
 ## 📍 Citation 
