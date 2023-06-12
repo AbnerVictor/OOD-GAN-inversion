@@ -1,7 +1,7 @@
 # Out-of-domain GAN inversion via Invertibility Decomposition
 Official implementation of 'Out-of-domain GAN inversion via Invertibility Decomposition for Photo-Realistic Human Face Manipulation'
 
-[Xin Yang](https://abnervictor.github.io/2020/06/12/Academic-Self-Intro.html), [Xiaogang Xu](https://xiaogang00.github.io), [Yingcong Chen](https://www.yingcong.me)
+[Xin Yang](https://abnervictor.github.io/2023/06/12/Academic-Self-Intro.html), [Xiaogang Xu](https://xiaogang00.github.io), [Yingcong Chen](https://www.yingcong.me)
 
 <a href='https://arxiv.org/abs/2212.09262'><img src='https://img.shields.io/badge/ArXiv-2212.09262-red'></a> 
 
