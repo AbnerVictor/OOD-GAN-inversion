@@ -34,9 +34,7 @@ Coming soon!
 @misc{yang2023outofdomain,
       title={Out-of-domain GAN inversion via Invertibility Decomposition for Photo-Realistic Human Face Manipulation}, 
       author={Xin Yang and Xiaogang Xu and Yingcong Chen},
+      booktitle={International Conference on Computer Vision (ICCV)},
       year={2023},
-      eprint={2212.09262},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
 }
 ```
