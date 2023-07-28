@@ -1,5 +1,5 @@
 /.idea/
-tb_logger/*
+/tb_logger/*
 *__pycache__
 /results/*
 /experiments/*
