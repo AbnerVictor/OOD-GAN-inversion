@@ -16,8 +16,10 @@ from torch.autograd import Function
 import torchvision.transforms as transforms
 
 from basicsr.archs.arch_util import trunc_normal_
-from src.ops.e4e.encoders.psp_encoders import GradualStyleBlock, Encoder4Editing, \
-    ProgressiveStage, pSp_like_Encoder, pSp_like_Encoder_v2
+
+from src.ops.e4e.encoders.psp_encoders import GradualStyleBlock, Encoder4Editing, ProgressiveStage
+from src.ops.restyle.restyle_e4e_encoder import ProgressiveBackboneEncoder, ResNetProgressiveBackboneEncoder
+
 from src.ops.StyleGAN.model import Generator, EqualLinear, NoiseInjection
 from src.ops.StyleGAN.modules import Upsample
 
@@ -25,7 +27,7 @@ from src.ops.SAMM.helpers import StyledscaleNshfitBlock
 
 
 @ARCH_REGISTRY.register()
-class ood_faceGAN_e4e(nn.Module):
+class ood_faceGAN_restyle(nn.Module):
     def __init__(self, 
                  # generator opts
                  out_size=1024, style_dim=512, n_mlp=8, channel_multiplier=2, narrow=1, merge='', 
@@ -33,8 +35,8 @@ class ood_faceGAN_e4e(nn.Module):
                  # augmentation
                  aug_alignment=False, aug_inputcolor=False,
                  # encoder opts
-                 stage='Inference', encoder='E4E', E4E_pth=None, avg_latent_pth=None,
-                 optim_delta_latent=False, delta_latent_pth=None,
+                 encoder='ReStyle', ReStyle_pth=None, enc_cycle=2,
+                 avg_latent_pth=None, optim_delta_latent=False, delta_latent_pth=None,
                  # modulation opts
                  enable_modulation=True, modulation_type='NOISE', warp_scale=0.02,
                  blend_with_gen=True, ModSize=None,
@@ -42,7 +44,7 @@ class ood_faceGAN_e4e(nn.Module):
                  progressiveModSize=[16, 32, 64, 128, 256], progressiveStart=20000, 
                  progressiveStep=2000, progressiveStageSteps=[999999999], eval_path_length=None,
                  **kwargs):
-        super(ood_faceGAN_e4e, self).__init__()
+        super(ood_faceGAN_restyle, self).__init__()
         self.encoder_type = encoder
         log_outsize = int(math.log(out_size, 2))
         self.style_cnt = log_outsize * 2 - 2
@@ -61,12 +63,32 @@ class ood_faceGAN_e4e(nn.Module):
             2048: int(8 * channel_multiplier * narrow),
         }
 
-        if encoder == 'E4E':
-            opts = easydict.EasyDict()
-            opts.stylegan_size = out_size
-            self.encoder = Encoder4Editing(num_layers=50, mode='ir_se', opts=opts, bn=True)
-            if enable_modulation:
+        self.avg_latent = nn.Parameter(torch.zeros((self.style_cnt, style_dim)), requires_grad=False)
 
+        if encoder == 'ReStyle':        
+            assert ReStyle_pth is not None
+            enc_ckpt = torch.load(ReStyle_pth, map_location='cpu')
+            enc_dict = OrderedDict()
+            
+            self.avg_latent.data = enc_ckpt['latent_avg']            
+            opts = easydict.EasyDict(enc_ckpt['opts'])
+            
+            if opts.encoder_type == 'ProgressiveBackboneEncoder':
+                self.encoder = ProgressiveBackboneEncoder(num_layers=50, mode='ir_se', n_styles=self.style_cnt ,opts=opts)
+            if opts.encoder_type == 'ResNetProgressiveBackboneEncoder':
+                self.encoder = ResNetProgressiveBackboneEncoder(n_styles=self.style_cnt ,opts=opts)
+
+            for k, v in enc_ckpt['state_dict'].items():
+                if 'encoder.' in k:
+                    enc_dict[k[len('encoder.'):]] = v
+            self.encoder.load_state_dict(enc_dict, strict=True)
+            
+            self.encoder.progressive_stage = ProgressiveStage[kwargs.get('stage', 'Inference')]
+            self.enc_cycle = enc_cycle
+            self.face_pool = torch.nn.AdaptiveAvgPool2d((256, 256))
+            self.avg_img = None
+
+            if enable_modulation:
                 self.feats_conv = nn.ModuleList()
                 featsize = 256
                 for i in range(4):
@@ -120,15 +142,13 @@ class ood_faceGAN_e4e(nn.Module):
 
         self.generator = Generator(size=out_size, n_mlp=n_mlp, style_dim=style_dim,
                                     channel_multiplier=channel_multiplier)
-
-        self.avg_latent = nn.Parameter(torch.zeros((1, style_dim)), requires_grad=False)
         
         if optim_delta_latent:
             self.delta_latent = nn.Parameter(torch.randn((1, 18, style_dim))*0.1, requires_grad=optim_delta_latent)
         else:
             self.delta_latent = nn.Parameter(torch.zeros((1, 18, style_dim)), requires_grad=optim_delta_latent)       
 
-        self.encoder.progressive_stage = ProgressiveStage[stage]
+        self.encoder.progressive_stage = ProgressiveStage[kwargs.get('stage', 'Inference')]
         self.progressiveStageSteps = progressiveStageSteps
         if self.progressiveStageSteps is None:
             self.progressiveStageSteps = [progressiveStart + progressiveStep * i for i in
@@ -137,17 +157,6 @@ class ood_faceGAN_e4e(nn.Module):
         if StyleGAN_pth is not None:
             gen_ckpt = torch.load(StyleGAN_pth, map_location='cpu')[StyleGAN_pth_key]
             self.generator.load_state_dict(gen_ckpt, strict=False)
-
-        if E4E_pth is not None:
-            enc_ckpt = torch.load(E4E_pth, map_location='cpu')
-            enc_dict = OrderedDict()
-            for k, v in enc_ckpt['state_dict'].items():
-                if 'encoder.' in k:
-                    enc_dict[k[len('encoder.'):]] = v
-            self.encoder.load_state_dict(enc_dict, strict=True)
-
-        if avg_latent_pth is not None:
-            self.avg_latent.data = torch.load(avg_latent_pth, map_location='cpu')
         
         if delta_latent_pth is not None:
             self.delta_latent.data = torch.load(delta_latent_pth, map_location='cpu')
@@ -203,8 +212,7 @@ class ood_faceGAN_e4e(nn.Module):
 
     def random_gen_center(self, scale=0.1, gen=True):
         with torch.no_grad():
-            lats = self.avg_latent + (torch.randn_like(self.avg_latent) * scale)
-            lats = lats.unsqueeze(1).repeat(1, self.style_cnt, 1)
+            lats = (self.avg_latent + (torch.randn_like(self.avg_latent) * scale)).unsqueeze(0)
             if gen:
                 out, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True)
             else:
@@ -241,35 +249,9 @@ class ood_faceGAN_e4e(nn.Module):
         self.aligns[ind] = align
         return condition / noise_weight
 
-
-    def forward(self, x, **kwargs):
-        random_gen = kwargs.get('random_gen', False)
-        if random_gen:
-            return self.random_gen(batch_size=kwargs.get('batch_size', 1),
-                                   gen=kwargs.get('gen', True))
-
-        # update progressive stage
-        step = kwargs.get('step', None)
-        if step is not None:
-            self.update_stage(step, kwargs.get('logger', None))
-
-        with torch.no_grad():
-            self.encoder.eval()
-            lats, feats = self.encoder(F.interpolate(x, (256, 256), mode='bilinear'), return_feats=True)
-
-        if self.eval_path_length:
-            lats.requires_grad = True
-
-        lats = lats + self.avg_latent.reshape(1, 1, -1) + self.delta_latent
-        # truncation
-        truncation = kwargs.get('truncation', 1.0)
-        if truncation < 1.0:
-            lats = self.avg_latent.reshape(1, 1, -1) * (1. - truncation) + (lats * truncation)
-
-        self.ori_lats = lats
-
-        if self.modulation is not None:
-            if self.encoder_type == 'E4E':
+    def generate(self, lats, feats=None, x=None, skip_modulation=False, skip_blending=False):
+        if self.modulation is not None and not skip_modulation:
+            if self.encoder_type == 'ReStyle':
                 try:
                     del self.feats
                     torch.cuda.empty_cache()
@@ -287,6 +269,7 @@ class ood_faceGAN_e4e(nn.Module):
                 torch.cuda.empty_cache()
             except:
                 pass
+            
             self.lats = lats
             
             conditions = self.feats2condition(self.feats)
@@ -296,7 +279,7 @@ class ood_faceGAN_e4e(nn.Module):
                                     callback=self.feats2condition_callback,
                                     align_aug=True if self.randomTransform is not None else False)
 
-            if self.blend_with_gen:
+            if self.blend_with_gen and not skip_blending:
                 if self.skip_SA:
                     with torch.no_grad():
                         gen, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True)
@@ -305,10 +288,53 @@ class ood_faceGAN_e4e(nn.Module):
                 alpha_scale = self.blending_mask()
                 for i in range(self.blend_cnt):
                     out = self.blend(x.detach(), out, detach=False, alpha_scale=alpha_scale)
-
         else:
             out, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True)
+        
+        return out
 
+
+    def forward(self, x, **kwargs):
+        random_gen = kwargs.get('random_gen', False)
+        if random_gen:
+            return self.random_gen(batch_size=kwargs.get('batch_size', 1),
+                                   gen=kwargs.get('gen', True))
+
+        # generate the average image
+        if self.avg_img is None:
+            avg_img, _ = self.random_gen_center(scale=0)
+            self.avg_img = self.face_pool(avg_img)
+
+        # update progressive stage
+        step = kwargs.get('step', None)
+        if step is not None:
+            self.update_stage(step, kwargs.get('logger', None))
+
+        with torch.no_grad():
+            # initial predction of latent codes
+            self.encoder.eval()
+            lats, feats = self.encoder(torch.cat([self.face_pool(x), self.avg_img.repeat(x.shape[0], 1, 1, 1)], dim=1), return_feats=True)                    
+            lats = lats + self.avg_latent.unsqueeze(0)
+            
+            for i in range(self.enc_cycle-1):
+                if self.modulation is not None:
+                    new_x = self.generate(lats, skip_modulation=True)
+                else:
+                    new_x = self.generate(lats, feats, skip_modulation=False, skip_blending=True)
+                delta_lats, feats = self.encoder(torch.cat([self.face_pool(x), self.face_pool(new_x)], dim=1), return_feats=True)
+                lats = lats + delta_lats
+        
+        # add delta_latent
+        lats += self.delta_latent
+
+        # truncation
+        truncation = kwargs.get('truncation', 1.0)
+        if truncation < 1.0:
+            lats = self.avg_latent.unsqueeze(0) * (1. - truncation) + (lats * truncation)
+
+        self.ori_lats = lats
+
+        out = self.generate(lats, feats, x)
 
         return out, lats
     
