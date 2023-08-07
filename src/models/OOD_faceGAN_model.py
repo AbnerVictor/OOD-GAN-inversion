@@ -51,9 +51,9 @@ def batch_tensor_to_list_tensor(x):
 
 
 @MODEL_REGISTRY.register()
-class FaceGAN_Model_0922(StyleGAN2Model):
+class ood_faceGAN_Model(StyleGAN2Model):
     def __init__(self, opt):
-        super(FaceGAN_Model_0922, self).__init__(opt)
+        super(ood_faceGAN_Model, self).__init__(opt)
         self.is_dist = True if self.opt['num_gpu'] > 1 else False
         self.save_checkpoint = self.opt['logger'].get('save_checkpoint', True)
         self.save_delta_latent = self.opt['logger'].get('save_delta_latent', False)
@@ -74,16 +74,7 @@ class FaceGAN_Model_0922(StyleGAN2Model):
         if self.autocast:
             self.logger.info('Autocast Enabled')
 
-        # define network net_d
-        self.net_d = build_network(self.opt['network_d'])
-        self.net_d = self.model_to_device(self.net_d)
-        self.print_network(self.net_d)
-
-        # load pretrained model
-        load_path = self.opt['path'].get('pretrain_network_d', None)
-        if load_path is not None:
-            param_key = self.opt['path'].get('param_key_d', 'params')
-            self.load_network(self.net_d, load_path, self.opt['path'].get('strict_load_d', True), param_key)
+        self.net_d = None
 
         # define network net_g with Exponential Moving Average (EMA)
         # net_g_ema only used for testing on one GPU and saving, do not need to
@@ -245,16 +236,6 @@ class FaceGAN_Model_0922(StyleGAN2Model):
             self.cri_contextual = build_loss(train_opt['contextual_opt']).to(self.device)
         else:
             self.cri_contextual = None
-
-        # latent swapping strategy
-        self.enable_latent_swap = train_opt.get('latent_swap_opt', None) is not None
-        if self.enable_latent_swap:
-            latent_swap_opt = train_opt.get('latent_swap_opt', None)
-            self.skip_non_swap_optm = latent_swap_opt.get('skip_non_swap_optm', False)
-            self.latent_swap_on = latent_swap_opt.get('reference', 'score')
-            self.latent_swap_loss = latent_swap_opt.get('loss', '')
-            self.latent_swap_loss_weight = latent_swap_opt.get('loss_weight', {'global': 1.0})
-            self.logger.info(f'enable_latent_swap on {self.latent_swap_on}')
 
         # which_gt
         self.which_gt = train_opt.get('which_gt', 'gt_inv')
@@ -513,7 +494,7 @@ class FaceGAN_Model_0922(StyleGAN2Model):
                 self.fake_latent_pred, _ = self.net_d2(self.latents.detach())
                 self.real_latent_pred, _ = self.net_d2(self.gt_latents.detach())
 
-    def test(self, latent_swapping_index=None):
+    def test(self):
         if self.is_mimo:
             b, k, c, h, w = self.gt.shape
         else:
@@ -521,8 +502,7 @@ class FaceGAN_Model_0922(StyleGAN2Model):
 
         with torch.no_grad():
             self.fake_hr, _ = self.net_g(self.lr.reshape(-1, c, h, w), input_size=self.lq_size,
-                                                    refinement_only=False,
-                                                    latent_swapping_index=latent_swapping_index, dropout=False)
+                                                    refinement_only=False, dropout=False)
             
         try:
             self.aligns = copy.deepcopy(self.get_bare_model(self.net_g).aligns)
@@ -534,7 +514,7 @@ class FaceGAN_Model_0922(StyleGAN2Model):
         if self.is_mimo:
             self.fake_hr = self.fake_hr.reshape(b, k, c, h, w)
 
-    def grad_net(self, net='net_g', current_iter=0, is_latent_swap=False):
+    def grad_net(self, net='net_g', current_iter=0):
         self.optimizer_d.zero_grad()
         self.optimizer_d2.zero_grad()
         self.optimizer_g.zero_grad()
@@ -572,10 +552,6 @@ class FaceGAN_Model_0922(StyleGAN2Model):
                     for n_ in grad_layers:
                         fix_flag = False if n_ in n else fix_flag
                     param.requires_grad = not fix_flag
-            if is_latent_swap:
-                for n, p in self.net_g.named_parameters():
-                    if 'ftm' not in n and 'attn' not in n:
-                        p.requires_grad = False
 
         elif net == 'net_d':
             # optimize net_d
@@ -599,17 +575,6 @@ class FaceGAN_Model_0922(StyleGAN2Model):
             for p in self.net_g.parameters():
                 p.requires_grad = False
 
-    def get_swap_index(self):
-        b, k, c, h, w = self.gt.shape
-        if self.latent_swap_on == 'score':
-            latent_swapping_index = torch.argmax(self.lq_size, dim=1).unsqueeze(1).repeat(1, k)
-        elif self.latent_swap_on == 'reverse_score':
-            latent_swapping_index = torch.argmin(self.lq_size, dim=1).unsqueeze(1).repeat(1, k)
-        else:
-            raise NotImplementedError(f'Unexpected latent swap base {self.latent_swap_on}')
-
-        return latent_swapping_index
-
     def optimize_parameters(self, current_iter):
         loss_dict = OrderedDict()
         if self.is_mimo:
@@ -617,211 +582,206 @@ class FaceGAN_Model_0922(StyleGAN2Model):
         else:
             b, c, h, w = self.gt.shape
 
-        flag_ = True
-        if self.enable_latent_swap:
-            flag_ = not self.skip_non_swap_optm
+        if self.cri_gan:
+            if not self.skip_gen_g:
+                self.grad_net('net_d', current_iter)
 
-        if flag_:
-            if self.cri_gan:
-                if not self.skip_gen_g:
-                    self.grad_net('net_d', current_iter)
+                self.infer(gt_inv=False, latent_dis=False, dis=True, step=current_iter)
 
-                    self.infer(gt_inv=False, latent_dis=False, dis=True, step=current_iter)
+                # Logistic loss
+                l_d = self.cri_gan(self.real_pred, True, is_disc=True) + \
+                        self.cri_gan(self.fake_pred, False, is_disc=True)
+                loss_dict['l_d'] = l_d
+                # In wgan, real_score should be positive and fake_score should be
+                # negative
+                loss_dict['real_score'] = self.real_pred.detach().mean()
+                loss_dict['fake_score'] = self.fake_pred.detach().mean()
+                # l_d.backward(retain_graph=True)
 
-                    # Logistic loss
-                    l_d = self.cri_gan(self.real_pred, True, is_disc=True) + \
-                          self.cri_gan(self.fake_pred, False, is_disc=True)
-                    loss_dict['l_d'] = l_d
-                    # In wgan, real_score should be positive and fake_score should be
-                    # negative
-                    loss_dict['real_score'] = self.real_pred.detach().mean()
-                    loss_dict['fake_score'] = self.fake_pred.detach().mean()
-                    # l_d.backward(retain_graph=True)
+                # TODO: keep r1 regularization?
+                if current_iter % self.net_d_reg_every == 0:
+                    self.gt.requires_grad = True
+                    gt_ = self.gt.reshape(-1, c, h, w)
+                    real_pred, _ = self.net_d(gt_)
+                    l_d_r1 = r1_penalty(real_pred, gt_)
+                    l_d_r1 = (self.r1_reg_weight / 2 * l_d_r1 * self.net_d_reg_every + 0 * real_pred[0])
+                    # TODO: why do we need to add 0 * real_pred, otherwise, a runtime
+                    # error will arise: RuntimeError: Expected to have finished
+                    # reduction in the prior iteration before starting a new one.
+                    # This error indicates that your module has parameters that were
+                    # not used in producing loss.
+                    loss_dict['l_d_r1'] = l_d_r1.detach().mean()
+                    # l_d_r1.backward()
 
-                    # TODO: keep r1 regularization?
-                    if current_iter % self.net_d_reg_every == 0:
-                        self.gt.requires_grad = True
-                        gt_ = self.gt.reshape(-1, c, h, w)
-                        real_pred, _ = self.net_d(gt_)
-                        l_d_r1 = r1_penalty(real_pred, gt_)
-                        l_d_r1 = (self.r1_reg_weight / 2 * l_d_r1 * self.net_d_reg_every + 0 * real_pred[0])
-                        # TODO: why do we need to add 0 * real_pred, otherwise, a runtime
-                        # error will arise: RuntimeError: Expected to have finished
-                        # reduction in the prior iteration before starting a new one.
-                        # This error indicates that your module has parameters that were
-                        # not used in producing loss.
-                        loss_dict['l_d_r1'] = l_d_r1.detach().mean()
-                        # l_d_r1.backward()
-
-                    if current_iter % self.net_d_reg_every == 0:
-                        l_d.backward(retain_graph=True)
-                        l_d_r1.backward()
-                    else:
-                        l_d.backward()
-                    torch.nn.utils.clip_grad_norm_(self.net_d.parameters(),
-                                                   max_norm=self.grad_clip_norm)
-                    self.optimizer_d.step()
-                    self.clean_cache(gt_inv=False, latent_dis=False, dis=True)
-
-                if not self.skip_latent_g:
-                    # optimize d2
-                    self.grad_net('net_d2', current_iter)
-                    self.infer(gt_inv=True, latent_dis=True, dis=False, step=current_iter)
-
-                    # Logistic loss
-                    l_latent_d = self.cri_gan(self.real_latent_pred, True, is_disc=True) + self.cri_gan(
-                        self.fake_latent_pred, False, is_disc=True)
-                    loss_dict['l_latent_d'] = l_latent_d
-                    # In wgan, real_score should be positive and fake_score should be
-                    # negative
-                    loss_dict['real_latent_score'] = self.real_latent_pred.detach().mean()
-                    loss_dict['fake_latent_score'] = self.fake_latent_pred.detach().mean()
-                    # l_d.backward(retain_graph=True)
-
-                    # TODO: keep r1 regularization?
-                    if current_iter % self.net_d_reg_every == 0:
-                        gt_ = self.gt_latents
-                        gt_.requires_grad = True
-                        real_pred, _ = self.net_d2(gt_)
-                        l_d_r1 = r1_penalty(real_pred, gt_)
-                        l_d_r1 = (self.r1_reg_weight / 2 * l_d_r1 * self.net_d_reg_every + 0 * real_pred[0])
-                        # TODO: why do we need to add 0 * real_pred, otherwise, a runtime
-                        # error will arise: RuntimeError: Expected to have finished
-                        # reduction in the prior iteration before starting a new one.
-                        # This error indicates that your module has parameters that were
-                        # not used in producing loss.
-                        loss_dict['l_latent_d_r1'] = l_d_r1.detach().mean()
-                        l_d_r1.backward()
-
-                    l_latent_d.backward()
-                    torch.nn.utils.clip_grad_norm_(self.net_d2.parameters(),
-                                                   max_norm=self.grad_clip_norm)
-
-                    self.optimizer_d2.step()
-                    self.clean_cache(gt_inv=True, latent_dis=True, dis=False)
-
-            ####################################### optimize g ########################################
-            self.grad_net('net_g', current_iter)
-
-            self.infer(gt_inv=not self.skip_latent_g, latent_dis=not self.skip_latent_g, dis=not self.skip_gen_g,
-                       step=current_iter)
-            l_total = 0
-
-            gt = getattr(self, self.which_gt)
-
-            if self.cri_gan:
-                if not self.skip_gen_g:
-                    # nonsaturating loss
-                    l_g = self.cri_gan(self.fake_pred, True, is_disc=False)
-                    loss_dict['l_g'] = l_g
-                    l_total += l_g
-
-                if not self.skip_latent_g:
-                    l_latent_g = self.cri_gan(self.fake_latent_pred, True, is_disc=False)
-                    loss_dict['l_latent_g'] = l_latent_g
-                    l_total += l_latent_g
-
-            # Identity loss
-            if self.cri_id is not None:
-                l_id, l_sim, l_id_logs = self.cri_id(self.fake_hr, gt, self.lr, mimo_id=self.is_mimo,
-                                                     score=self.lq_size)
-                if self.is_mimo:
-                    loss_dict['l_id_target'] = l_id
-                    l_total += l_id
-                    if l_sim > 1e-5:
-                        loss_dict['l_id_ref'] = l_sim
-                        l_total += l_sim
+                if current_iter % self.net_d_reg_every == 0:
+                    l_d.backward(retain_graph=True)
+                    l_d_r1.backward()
                 else:
-                    loss_dict['l_id_target'] = l_id
-                    l_total += l_id
+                    l_d.backward()
+                torch.nn.utils.clip_grad_norm_(self.net_d.parameters(),
+                                                max_norm=self.grad_clip_norm)
+                self.optimizer_d.step()
+                self.clean_cache(gt_inv=False, latent_dis=False, dis=True)
 
-            if self.cri_ldm is not None:
-                gt_ = gt.reshape(-1, c, h, w)
-                fake_hr = self.fake_hr.reshape(-1, c, h, w)
-                l_ldm = self.cri_ldm(fake_hr, gt_)
-                loss_dict['l_ldm'] = l_ldm
-                l_total += l_ldm
+            if not self.skip_latent_g:
+                # optimize d2
+                self.grad_net('net_d2', current_iter)
+                self.infer(gt_inv=True, latent_dis=True, dis=False, step=current_iter)
 
-            # Pixel loss
-            if self.cri_pix is not None:
-                l_pix = self.cri_pix(self.fake_hr.reshape(-1, c, h, w), gt.reshape(-1, c, h, w))
-                loss_dict['l_pix'] = l_pix
-                l_total += l_pix
+                # Logistic loss
+                l_latent_d = self.cri_gan(self.real_latent_pred, True, is_disc=True) + self.cri_gan(
+                    self.fake_latent_pred, False, is_disc=True)
+                loss_dict['l_latent_d'] = l_latent_d
+                # In wgan, real_score should be positive and fake_score should be
+                # negative
+                loss_dict['real_latent_score'] = self.real_latent_pred.detach().mean()
+                loss_dict['fake_latent_score'] = self.fake_latent_pred.detach().mean()
+                # l_d.backward(retain_graph=True)
 
-            # Perceptual loss
-            if self.cri_perceptual is not None:
-                l_percep, l_style = self.cri_perceptual(self.fake_hr.reshape(-1, c, h, w), gt.reshape(-1, c, h, w))
-                if l_percep is not None:
-                    l_total += l_percep
-                    loss_dict['l_percep'] = l_percep
-                if l_style is not None:
-                    l_total += l_style
-                    loss_dict['l_style'] = l_style
+                # TODO: keep r1 regularization?
+                if current_iter % self.net_d_reg_every == 0:
+                    gt_ = self.gt_latents
+                    gt_.requires_grad = True
+                    real_pred, _ = self.net_d2(gt_)
+                    l_d_r1 = r1_penalty(real_pred, gt_)
+                    l_d_r1 = (self.r1_reg_weight / 2 * l_d_r1 * self.net_d_reg_every + 0 * real_pred[0])
+                    # TODO: why do we need to add 0 * real_pred, otherwise, a runtime
+                    # error will arise: RuntimeError: Expected to have finished
+                    # reduction in the prior iteration before starting a new one.
+                    # This error indicates that your module has parameters that were
+                    # not used in producing loss.
+                    loss_dict['l_latent_d_r1'] = l_d_r1.detach().mean()
+                    l_d_r1.backward()
 
-            # latent regularization
-            if self.cri_latent_reg is not None:
-                l_latent_reg = self.cri_latent_reg(self.delta,
-                                                   torch.zeros_like(self.latents).detach())
-                l_total += l_latent_reg
-                loss_dict['l_latent_reg'] = l_latent_reg
+                l_latent_d.backward()
+                torch.nn.utils.clip_grad_norm_(self.net_d2.parameters(),
+                                                max_norm=self.grad_clip_norm)
 
-            if self.cri_latent is not None:
-                l_latent = self.cri_latent(self.gt_latents['ori_latents'], self.latents['latents'])
-                l_total += l_latent
-                loss_dict['l_latent'] = l_latent
+                self.optimizer_d2.step()
+                self.clean_cache(gt_inv=True, latent_dis=True, dis=False)
 
-            if self.cri_aug is not None:
-                l_aug = self.cri_aug(self.latents['aug_lats'], self.latents['cyc_lats'])
-                l_total += l_aug
-                loss_dict['l_aug'] = l_aug
+        ####################################### optimize g ########################################
+        self.grad_net('net_g', current_iter)
 
-            if self.cri_mask is not None:
-                l_bin, l_area = self.cri_mask(self.aligns)
-                l_total += (l_bin + l_area)
-                loss_dict['l_bin'] = l_bin
-                loss_dict['l_area'] = l_area
-                
-            if self.cri_clip is not None:
-                l_clip = self.cri_clip(self.fake_hr.reshape(-1, c, h, w))
+        self.infer(gt_inv=not self.skip_latent_g, latent_dis=not self.skip_latent_g, dis=not self.skip_gen_g,
+                    step=current_iter)
+        l_total = 0
 
-                l_total += l_clip
-                loss_dict['l_clip'] = l_clip
+        gt = getattr(self, self.which_gt)
 
-            if self.cri_clip_direct is not None:
-                l_clip_direct = self.cri_clip_direct(self.src_image.reshape(-1, c, h, w), self.fake_hr.reshape(-1, c, h, w))
-                l_total += l_clip_direct
-                loss_dict['l_clip_direct'] = l_clip_direct
+        if self.cri_gan:
+            if not self.skip_gen_g:
+                # nonsaturating loss
+                l_g = self.cri_gan(self.fake_pred, True, is_disc=False)
+                loss_dict['l_g'] = l_g
+                l_total += l_g
 
-            if self.cri_contextual is not None:
-                l_contextual = self.cri_contextual(self.fake_hr.reshape(-1, c, h, w), gt.reshape(-1, c, h, w))
-                l_total += l_contextual
-                loss_dict['l_contextual'] = l_contextual
+            if not self.skip_latent_g:
+                l_latent_g = self.cri_gan(self.fake_latent_pred, True, is_disc=False)
+                loss_dict['l_latent_g'] = l_latent_g
+                l_total += l_latent_g
 
-            # TODO: keep path regulrization?
-            if self.cri_gan and current_iter % self.net_g_reg_every == 0 and self.fake_hr.shape[0] > 1:
-                # path_batch_size = max(1, batch // self.opt['train']['path_batch_shrink'])
-                # noise = self.mixing_noise(path_batch_size, self.mixing_prob)
-                # fake_img, latents = self.net_g(noise, return_latents=True)
-                l_g_path, path_lengths, self.mean_path_length = g_path_regularize(self.fake_hr.reshape(-1, c, h, w),
-                                                                                  self.latents,
-                                                                                  self.mean_path_length)
-
-                l_g_path = (self.path_reg_weight * self.net_g_reg_every * l_g_path + 0 * self.fake_hr[0, 0, 0, 0, 0])
-                # TODO:  why do we need to add 0 * fake_img[0, 0, 0, 0]
-                # l_g_path.backward()
-                loss_dict['l_g_path'] = l_g_path.detach().mean()
-                loss_dict['path_length'] = path_lengths
-
-            if self.cri_gan and current_iter % self.net_g_reg_every == 0 and self.fake_hr.shape[0] > 1:
-                l_total.backward(retain_graph=True)
-                l_g_path.backward()
+        # Identity loss
+        if self.cri_id is not None:
+            l_id, l_sim, l_id_logs = self.cri_id(self.fake_hr, gt, self.lr, mimo_id=self.is_mimo,
+                                                    score=self.lq_size)
+            if self.is_mimo:
+                loss_dict['l_id_target'] = l_id
+                l_total += l_id
+                if l_sim > 1e-5:
+                    loss_dict['l_id_ref'] = l_sim
+                    l_total += l_sim
             else:
-                l_total.backward(retain_graph=True)
+                loss_dict['l_id_target'] = l_id
+                l_total += l_id
 
-            # gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.get_bare_model(self.net_g).parameters(), max_norm=self.grad_clip_norm)            
-            self.optimizer_g.step()
-            self.clean_cache(gt_inv=not self.skip_latent_g, latent_dis=not self.skip_latent_g, dis=not self.skip_gen_g)
+        if self.cri_ldm is not None:
+            gt_ = gt.reshape(-1, c, h, w)
+            fake_hr = self.fake_hr.reshape(-1, c, h, w)
+            l_ldm = self.cri_ldm(fake_hr, gt_)
+            loss_dict['l_ldm'] = l_ldm
+            l_total += l_ldm
+
+        # Pixel loss
+        if self.cri_pix is not None:
+            l_pix = self.cri_pix(self.fake_hr.reshape(-1, c, h, w), gt.reshape(-1, c, h, w))
+            loss_dict['l_pix'] = l_pix
+            l_total += l_pix
+
+        # Perceptual loss
+        if self.cri_perceptual is not None:
+            l_percep, l_style = self.cri_perceptual(self.fake_hr.reshape(-1, c, h, w), gt.reshape(-1, c, h, w))
+            if l_percep is not None:
+                l_total += l_percep
+                loss_dict['l_percep'] = l_percep
+            if l_style is not None:
+                l_total += l_style
+                loss_dict['l_style'] = l_style
+
+        # latent regularization
+        if self.cri_latent_reg is not None:
+            l_latent_reg = self.cri_latent_reg(self.delta,
+                                                torch.zeros_like(self.latents).detach())
+            l_total += l_latent_reg
+            loss_dict['l_latent_reg'] = l_latent_reg
+
+        if self.cri_latent is not None:
+            l_latent = self.cri_latent(self.gt_latents['ori_latents'], self.latents['latents'])
+            l_total += l_latent
+            loss_dict['l_latent'] = l_latent
+
+        if self.cri_aug is not None:
+            l_aug = self.cri_aug(self.latents['aug_lats'], self.latents['cyc_lats'])
+            l_total += l_aug
+            loss_dict['l_aug'] = l_aug
+
+        if self.cri_mask is not None:
+            l_bin, l_area = self.cri_mask(self.aligns)
+            l_total += (l_bin + l_area)
+            loss_dict['l_bin'] = l_bin
+            loss_dict['l_area'] = l_area
+            
+        if self.cri_clip is not None:
+            l_clip = self.cri_clip(self.fake_hr.reshape(-1, c, h, w))
+
+            l_total += l_clip
+            loss_dict['l_clip'] = l_clip
+
+        if self.cri_clip_direct is not None:
+            l_clip_direct = self.cri_clip_direct(self.src_image.reshape(-1, c, h, w), self.fake_hr.reshape(-1, c, h, w))
+            l_total += l_clip_direct
+            loss_dict['l_clip_direct'] = l_clip_direct
+
+        if self.cri_contextual is not None:
+            l_contextual = self.cri_contextual(self.fake_hr.reshape(-1, c, h, w), gt.reshape(-1, c, h, w))
+            l_total += l_contextual
+            loss_dict['l_contextual'] = l_contextual
+
+        # TODO: keep path regulrization?
+        if self.cri_gan and current_iter % self.net_g_reg_every == 0 and self.fake_hr.shape[0] > 1:
+            # path_batch_size = max(1, batch // self.opt['train']['path_batch_shrink'])
+            # noise = self.mixing_noise(path_batch_size, self.mixing_prob)
+            # fake_img, latents = self.net_g(noise, return_latents=True)
+            l_g_path, path_lengths, self.mean_path_length = g_path_regularize(self.fake_hr.reshape(-1, c, h, w),
+                                                                                self.latents,
+                                                                                self.mean_path_length)
+
+            l_g_path = (self.path_reg_weight * self.net_g_reg_every * l_g_path + 0 * self.fake_hr[0, 0, 0, 0, 0])
+            # TODO:  why do we need to add 0 * fake_img[0, 0, 0, 0]
+            # l_g_path.backward()
+            loss_dict['l_g_path'] = l_g_path.detach().mean()
+            loss_dict['path_length'] = path_lengths
+
+        if self.cri_gan and current_iter % self.net_g_reg_every == 0 and self.fake_hr.shape[0] > 1:
+            l_total.backward(retain_graph=True)
+            l_g_path.backward()
+        else:
+            l_total.backward(retain_graph=True)
+
+        # gradient clipping
+        torch.nn.utils.clip_grad_norm_(self.get_bare_model(self.net_g).parameters(), max_norm=self.grad_clip_norm)            
+        self.optimizer_g.step()
+        self.clean_cache(gt_inv=not self.skip_latent_g, latent_dis=not self.skip_latent_g, dis=not self.skip_gen_g)
 
         self.log_dict = self.reduce_loss_dict(loss_dict)
 
@@ -861,21 +821,11 @@ class FaceGAN_Model_0922(StyleGAN2Model):
             img_name = osp.splitext(osp.basename(gt_pth))[0]
 
             self.feed_data(val_data)
-
-            if self.enable_latent_swap and self.is_mimo:
-                latent_swapping_index = self.get_swap_index()
-            else:
-                latent_swapping_index = None
-
-            self.test(latent_swapping_index=latent_swapping_index)
+            self.test()
 
             lq = tensor2img(self.lr[0, ...], min_max=(-1, 1))
             gt = tensor2img(self.gt[0, ...], min_max=(-1, 1))
             fake_hr = tensor2img(self.fake_hr[0, ...], min_max=(-1, 1))
-            # if self.blend is not None:
-            #     blend = tensor2img(self.blend[0, ...], min_max=(-1, 1))
-            # else:
-            #     blend = None
             
             try:
                 keys = self.aligns.keys()
@@ -892,10 +842,6 @@ class FaceGAN_Model_0922(StyleGAN2Model):
 
             metric_data['img'] = fake_hr
             metric_data['img2'] = gt
-            # if 'degradation_clss' in self.latents.keys():
-            #     get_root_logger().info(msg=[f'{img_name}_{idx}_degradation_clss', F.softmax(self.latents['degradation_clss'])])
-            # if 'scale' in self.latents.keys():
-            #     get_root_logger().info(msg=[f'{img_name}_{idx}_scale', self.latents['scale']])
 
             del self.lr
             del self.gt
@@ -914,7 +860,7 @@ class FaceGAN_Model_0922(StyleGAN2Model):
                     save_img_gt_path = osp.join(self.opt['path']['visualization'], f'{keyword}',
                                                 f'{keyword}_{current_iter}', f'{img_name}_{idx}_gt.jpg')
                     save_img_mask_path = osp.join(self.opt['path']['visualization'], f'{keyword}',
-                                                f'{keyword}_{current_iter}', f'{img_name}_{idx}_gt.jpg')
+                                                f'{keyword}_{current_iter}', f'{img_name}_{idx}_mask.jpg')
 
                 try:
                     if save_lq_and_gt:
@@ -1096,5 +1042,5 @@ if __name__ == '__main__':
         opt = yaml.load(f, Loader=yaml.FullLoader)
     opt['is_train'] = True
     opt['dist'] = False
-    model = FaceGAN_Model_0922(opt)
+    model = ood_faceGAN_Model(opt)
 

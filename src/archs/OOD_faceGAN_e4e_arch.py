@@ -25,7 +25,7 @@ from src.ops.SAMM.helpers import StyledscaleNshfitBlock
 
 
 @ARCH_REGISTRY.register()
-class pSp_like_inversion_v8(nn.Module):
+class ood_faceGAN_e4e(nn.Module):
     def __init__(self, 
                  # generator opts
                  out_size=1024, style_dim=512, n_mlp=8, channel_multiplier=2, narrow=1, merge='', 
@@ -42,7 +42,7 @@ class pSp_like_inversion_v8(nn.Module):
                  progressiveModSize=[16, 32, 64, 128, 256], progressiveStart=20000, 
                  progressiveStep=2000, progressiveStageSteps=[999999999], eval_path_length=None,
                  **kwargs):
-        super(pSp_like_inversion_v8, self).__init__()
+        super(ood_faceGAN_e4e, self).__init__()
         self.encoder_type = encoder
         log_outsize = int(math.log(out_size, 2))
         self.style_cnt = log_outsize * 2 - 2

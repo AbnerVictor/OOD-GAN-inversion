@@ -1,6 +1,6 @@
 # general settings
 name: OOD_faceGAN_e4e
-model_type: FaceGAN_Model_0922
+model_type: ood_faceGAN_Model
 num_gpu: 1  # set num_gpu: 0 for cpu mode
 manual_seed: 0
 is_mimo: true
@@ -14,7 +14,7 @@ datasets:
     name: FFHQ
     type: Face_Dataset
     dataroot_gt: ~
-    dataroot_gt_list: ['datasets/FFHQ/images1024x1024']
+    dataroot_gt_list: ['/dataset/xinyang/newdata_backup/datasets/FFHQ/images1024x1024']
     mode: mix_id
     gt_size: 1024
     max_length: 1
@@ -36,7 +36,7 @@ datasets:
   val:
     name: CelebAHQ_test
     type: Face_Dataset
-    dataroot_gt: datasets/Overfit
+    dataroot_gt: /dataset/xinyang/newdata_backup/datasets/Overfit
     mode: mix_id
     gt_size: 1024
     max_length: 1
@@ -50,7 +50,7 @@ datasets:
 
 # network structures
 network_g:
-  type: pSp_like_inversion_v8
+  type: ood_faceGAN_e4e
   out_size: 1024
   style_dim: 512
   StyleGAN_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
@@ -227,7 +227,3 @@ logger:
 dist_params:
   backend: nccl
   port: 29500
-
-
-# on RTX3090 server
-# export TORCH_CUDA_ARCH_LIST=8.0
