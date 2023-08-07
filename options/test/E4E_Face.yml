@@ -1,0 +1,98 @@
+# general settings
+name: OOD_faceGAN_e4e
+model_type: ood_faceGAN_Model
+num_gpu: 1  # set num_gpu: 0 for cpu mode
+manual_seed: 0
+is_mimo: true
+
+test:
+  autocast: True
+
+# dist: true
+# find_unused_parameters: true
+
+# dataset and data loader settings
+datasets:
+  val:
+    name: CelebAHQ_test
+    type: Face_Dataset
+    dataroot_gt: /dataset/xinyang/newdata_backup/datasets/Overfit
+    mode: mix_id
+    gt_size: 1024
+    max_length: 1
+    fix_input: false
+    random_seed: 0
+    io_backend:
+      type: disk
+    use_hflip: false
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+
+# network structures
+network_g:
+  type: ood_faceGAN_e4e
+  out_size: 1024
+  style_dim: 512
+  StyleGAN_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
+  StyleGAN_pth_key: g_ema
+  avg_latent_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f_avg_latent.pth
+  E4E_pth: checkpoints/pretrained_models/StyleGAN2/e4e_ffhq_encode.pt
+  encoder: E4E
+  enable_modulation: true
+  modulation_type: NOISE
+  warp_scale: 0.08
+  cycle_align: 2  
+  blend_with_gen: true
+  ModSize: ~
+  progressiveModSize: [32, 64, 128, 256]
+  progressiveModFrozen: false
+  ModDropout_p: 0.0
+  stage: Inference
+  progressiveStart: 2000 # 5000
+  progressiveStep: 4000 # 25000
+  progressiveStageSteps: ~ # leave it none for automatic gensssseration
+
+# path
+path:
+  pretrain_network_g: /dataset/xinyang/newdata_backup/workspace/OOD-GAN-inversion/experiments/OOD_faceGAN_e4e/models/net_g_406000.pth
+  param_key_g: 'params_ema'
+  strict_load_g: false
+
+# validation settings
+val:
+  val_freq: !!float 2e3
+  save_img: true
+  save_lq_and_gt: true
+  pbar: true
+
+  metrics:
+    lpips:
+      type: calculate_lpips
+      crop_border: 2
+      test_y_channel: true
+      model_path: checkpoints/pretrained_models/lpips/alex.pth
+      better: lower
+    psnr:
+      type: calculate_psnr
+      crop_border: 2
+      test_y_channel: true
+      better: higher
+    ssim:
+      type: calculate_ssim
+      crop_border: 2
+      test_y_channel: true
+      better: higher
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 2e3
+  use_tb_logger: true
+  wandb:
+    project: ~ # reproduce-project
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
