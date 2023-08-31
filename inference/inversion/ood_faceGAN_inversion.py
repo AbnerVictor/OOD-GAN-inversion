@@ -17,11 +17,11 @@ flow_scale = 0.08
 root = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
 
 # 
-exp_name = 'CelebA-Eval-1000-N3'
+exp_name = 'CelebA-Eval-1000-E4E-N3'
 data_root = '/dataset/xinyang/newdata_backup/datasets/CelebA/CelebAMask-HQ/CelebA-Eval-1000'
 
 # ood faceGAN pretrained models
-pth_ = torch.load('/dataset/xinyang/newdata_backup/workspace/OOD-GAN-inversion/experiments/OOD_faceGAN_e4e/models/net_g_406000.pth')['params_ema']
+pth_ = torch.load('/dataset/xinyang/newdata_backup/workspace/OOD-GAN-inversion/experiments/OOD_faceGAN_e4e/models/net_g_410000.pth')['params_ema']
 
 # pretrained models
 StyleGAN_pth=f'{root}/checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth'

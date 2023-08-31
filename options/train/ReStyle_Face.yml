@@ -68,7 +68,6 @@ network_g:
   progressiveModSize: [32, 64, 128, 256]
   progressiveModFrozen: false
   ModDropout_p: 0.0
-  stage: Inference
   progressiveStart: 2000 # 5000
   progressiveStep: 4000 # 25000
   progressiveStageSteps: ~ # leave it none for automatic gensssseration

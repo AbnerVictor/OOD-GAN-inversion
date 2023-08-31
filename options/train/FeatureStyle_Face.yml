@@ -14,7 +14,7 @@ datasets:
     name: FFHQ
     type: Face_Dataset
     dataroot_gt: ~
-    dataroot_gt_list: ['datasets/Image_Generation/FFHQ/images1024x1024']
+    dataroot_gt_list: ['/dataset/xinyang/newdata_backup/datasets/FFHQ/images1024x1024']
     mode: mix_id
     gt_size: 1024
     max_length: 1
@@ -36,7 +36,7 @@ datasets:
   val:
     name: CelebAHQ_test
     type: Face_Dataset
-    dataroot_gt: datasets/Image_Generation/Overfit
+    dataroot_gt: /dataset/xinyang/newdata_backup/datasets/Overfit
     mode: mix_id
     gt_size: 1024
     max_length: 1
@@ -50,13 +50,14 @@ datasets:
 
 # network structures
 network_g:
-  type: pSp_like_inversion_v8_featurestyle
+  type: ood_faceGAN_FeatureStyle
   out_size: 1024
   style_dim: 512
-  StyleGAN_pth: experiments/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
-  avg_latent_pth: experiments/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f_avg_latent.pth
-  E4E_pth: /newdata/xinyang/workspace/image_generation/FeatureStyleEncoder/pretrained_models/143_enc.pth 
-  arcface_model_path: /newdata/xinyang/workspace/image_generation/FeatureStyleEncoder/pretrained_models/backbone.pth
+  StyleGAN_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
+  StyleGAN_pth_key: g_ema
+  avg_latent_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f_avg_latent.pth
+  FeatureStyle_pth: checkpoints/pretrained_models/featureStyle/143_enc.pth
+  arcface_model_path: checkpoints/pretrained_models/featureStyle/backbone.pth
   enable_modulation: true
   modulation_type: NOISE
   warp_scale: 0.08
@@ -67,7 +68,6 @@ network_g:
   progressiveModSize: [32, 64, 128, 256]
   progressiveModFrozen: false
   ModDropout_p: 0.0
-  stage: Inference
   progressiveStart: 2000
   progressiveStep: 4000
   progressiveStageSteps: ~ # leave it none for automatic gensssseration
@@ -115,11 +115,11 @@ train:
     milestones: 15000
     gamma: 0.75
 
-  total_iter: 1800000
+  total_iter: 700000
   warmup_iter: -1  # no warm up
 
   # fix generator before startup_iter
-  startup_iter: 1800000
+  startup_iter: 700000
   fix_and_grad: 
     fix: ['generator', 'avg_latent', 'encoder'] # , 'alignment', 'residual_encoder'
     grad: []
@@ -157,7 +157,7 @@ train:
     type: IDLoss
     loss_weight: 0.1
     ref_loss_weight: 0.0
-    ckpt: experiments/pretrained_models/ir_se/model_ir_se50.pth
+    ckpt: checkpoints/pretrained_models/ir_se/model_ir_se50.pth
 
   perceptual_opt:
       type: PerceptualLoss
@@ -201,7 +201,7 @@ val:
       type: calculate_lpips
       crop_border: 2
       test_y_channel: true
-      model_path: experiments/pretrained_models/lpips/alex.pth
+      model_path: checkpoints/pretrained_models/lpips/alex.pth
       better: lower
     psnr:
       type: calculate_psnr

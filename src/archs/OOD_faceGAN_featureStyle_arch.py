@@ -16,11 +16,11 @@ from torch.autograd import Function
 import torchvision.transforms as transforms
 
 from basicsr.archs.arch_util import trunc_normal_
-from src.ops.e4e.encoders.psp_encoders import GradualStyleBlock, Encoder4Editing, \
-    ProgressiveStage, pSp_like_Encoder, pSp_like_Encoder_v2
+from src.ops.e4e.encoders.psp_encoders import ProgressiveStage
 from src.ops.StyleGAN.model import Generator, EqualLinear, NoiseInjection
 from src.ops.StyleGAN.modules import Upsample
 
+from src.ops.FeatureStyle.feature_style_encoder import fs_encoder_v2
 from src.ops.SAMM.helpers import StyledscaleNshfitBlock
 
 
@@ -29,12 +29,12 @@ class ood_faceGAN_FeatureStyle(nn.Module):
     def __init__(self, 
                  # generator opts
                  out_size=1024, style_dim=512, n_mlp=8, channel_multiplier=2, narrow=1, merge='', 
-                 StyleGAN_pth=None, StyleGAN_pth_key='params_ema', 
+                 StyleGAN_pth=None, StyleGAN_pth_key='g_ema', 
                  # augmentation
                  aug_alignment=False, aug_inputcolor=False,
-                 # encoder opts
-                 stage='Inference', encoder='E4E', E4E_pth=None, avg_latent_pth=None,
-                 optim_delta_latent=False, delta_latent_pth=None,
+                 # encoder opts 
+                 encoder='FeatureStyle', FeatureStyle_pth=None, arcface_model_path=None, avg_latent_pth=None,
+                 optim_delta_latent=False, delta_latent_pth=None, 
                  # modulation opts
                  enable_modulation=True, modulation_type='NOISE', warp_scale=0.02,
                  blend_with_gen=True, ModSize=None,
@@ -61,18 +61,38 @@ class ood_faceGAN_FeatureStyle(nn.Module):
             2048: int(8 * channel_multiplier * narrow),
         }
 
-        if encoder == 'E4E':
-            opts = easydict.EasyDict()
-            opts.stylegan_size = out_size
-            self.encoder = Encoder4Editing(num_layers=50, mode='ir_se', opts=opts, bn=True)
+        self.avg_latent = nn.Parameter(torch.zeros((self.style_cnt, style_dim)), requires_grad=False)
+        if avg_latent_pth is not None:
+            self.avg_latent.data = torch.load(avg_latent_pth, map_location='cpu')
+
+
+        if encoder == 'FeatureStyle':
+            assert FeatureStyle_pth is not None
+            enc_ckpt = torch.load(FeatureStyle_pth, map_location='cpu')
+            
+            self.encoder = fs_encoder_v2(n_styles=self.style_cnt, opts=easydict.EasyDict({'arcface_model_path': arcface_model_path}), 
+                                         residual=False, use_coeff=False, resnet_layer=[4, 5, 6],  stride=(2, 2))
+
+            self.encoder.load_state_dict(enc_ckpt, strict=True)
+            
+            self.face_pool = torch.nn.AdaptiveAvgPool2d((256, 256))
+
             if enable_modulation:
+                enc_channels = [64, 64, 128, 256]
                 self.feats_conv = nn.ModuleList()
                 featsize = 256
                 for i in range(4):
-                    conv = nn.Conv2d(self.encoder.channels[i], self.channels[featsize], kernel_size=1, stride=1, padding=0)
+                    conv = nn.Conv2d(enc_channels[i], self.channels[featsize], kernel_size=1, stride=1, padding=0)
                     self.feats_conv.append(conv)
                     featsize /= 2
 
+        self.generator = Generator(size=out_size, n_mlp=n_mlp, style_dim=style_dim,
+                                    channel_multiplier=channel_multiplier)
+
+        if StyleGAN_pth is not None:
+            gen_ckpt = torch.load(StyleGAN_pth, map_location='cpu')[StyleGAN_pth_key]
+            self.generator.load_state_dict(gen_ckpt, strict=False)
+        
         # self.conditions = {}
         self.aligns = {}
         self.log_outsize = int(math.log(256, 2))
@@ -111,52 +131,19 @@ class ood_faceGAN_FeatureStyle(nn.Module):
                                                      scale=warp_scale,
                                                      btn=kwargs.get('mod_btn', None),
                                                      cycle_align=kwargs.get('cycle_align', 1),
-                                                     diff_fAndg=kwargs.get('diff_fAndg', True))
+                                                     diff_fAndg=kwargs.get('diff_fAndg', True),
+                                                     bias=kwargs.get('mod_bias', False))
                 self.modulation.append(scaleNshift)
         else:
             self.modulation = None
             self.ModSize = 0
-
-        self.generator = Generator(size=out_size, n_mlp=n_mlp, style_dim=style_dim,
-                                    channel_multiplier=channel_multiplier)
-
-        self.avg_latent = nn.Parameter(torch.zeros((1, style_dim)), requires_grad=False)
         
-        if optim_delta_latent:
-            self.delta_latent = nn.Parameter(torch.randn((1, 18, style_dim))*0.1, requires_grad=optim_delta_latent)
-        else:
-            self.delta_latent = nn.Parameter(torch.zeros((1, 18, style_dim)), requires_grad=optim_delta_latent)       
-
-        self.encoder.progressive_stage = ProgressiveStage[stage]
+        self.delta_latent = nn.Parameter(torch.zeros((1, self.style_cnt, style_dim)), requires_grad=False) 
+        
         self.progressiveStageSteps = progressiveStageSteps
         if self.progressiveStageSteps is None:
             self.progressiveStageSteps = [progressiveStart + progressiveStep * i for i in
                                           range(self.style_cnt)]
-
-        if StyleGAN_pth is not None:
-            gen_ckpt = torch.load(StyleGAN_pth, map_location='cpu')[StyleGAN_pth_key]
-            self.generator.load_state_dict(gen_ckpt, strict=False)
-
-        if E4E_pth is not None:
-            enc_ckpt = torch.load(E4E_pth, map_location='cpu')
-            enc_dict = OrderedDict()
-            for k, v in enc_ckpt['state_dict'].items():
-                if 'encoder.' in k:
-                    enc_dict[k[len('encoder.'):]] = v
-            self.encoder.load_state_dict(enc_dict, strict=True)
-
-        if avg_latent_pth is not None:
-            self.avg_latent.data = torch.load(avg_latent_pth, map_location='cpu')
-        
-        if delta_latent_pth is not None:
-            self.delta_latent.data = torch.load(delta_latent_pth, map_location='cpu')
-
-        if eval_path_length is not None:
-            self.eval_path_length = eval_path_length
-        elif self.modulation and self.encoder.progressive_stage == ProgressiveStage.Inference:
-            self.eval_path_length = True
-        else:
-            self.eval_path_length = False
 
     def update_stage(self, step, logger=None):
         if len(self.progressiveStageSteps) > 0:
@@ -240,6 +227,48 @@ class ood_faceGAN_FeatureStyle(nn.Module):
         self.aligns[ind] = align
         return condition / noise_weight
 
+    def generate(self, lats, feats=None, x=None, contents=None, skip_modulation=False, skip_blending=False):
+        if self.modulation is not None and not skip_modulation:
+            try:
+                del self.feats
+                torch.cuda.empty_cache()
+            except:
+                pass
+            self.feats = []
+            for i in range(4):
+                feat = self.feats_conv[i](feats[i])
+                self.feats.append(feat)
+            
+            try:
+                del self.lats
+                torch.cuda.empty_cache()
+            except:
+                pass
+            
+            self.lats = lats
+            
+            conditions = self.feats2condition(self.feats)
+            cond_ind = [(2 * (k + 2)) + 1 for k in range(len(conditions))]
+            out, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True,
+                                    conditions=conditions, cond_layers=cond_ind, cond_type=self.modulation_type,
+                                    callback=self.feats2condition_callback,
+                                    align_aug=True if self.randomTransform is not None else False,
+                                    features_in=contents, feature_scale=1.0)
+
+            if self.blend_with_gen and not skip_blending:
+                if self.skip_SA:
+                    with torch.no_grad():
+                        gen, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True)
+                        out = gen.detach()
+
+                alpha_scale = self.blending_mask()
+                for i in range(self.blend_cnt):
+                    out = self.blend(x.detach(), out, detach=False, alpha_scale=alpha_scale)
+        else:
+            out, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True,
+                                    features_in=contents, feature_scale=1.0)
+        
+        return out
 
     def forward(self, x, **kwargs):
         random_gen = kwargs.get('random_gen', False)
@@ -253,61 +282,23 @@ class ood_faceGAN_FeatureStyle(nn.Module):
             self.update_stage(step, kwargs.get('logger', None))
 
         with torch.no_grad():
+            # initial predction of latent codes
             self.encoder.eval()
-            lats, feats = self.encoder(F.interpolate(x, (256, 256), mode='bilinear'), return_feats=True)
+            lats, contents, feats = self.encoder(self.face_pool(x), return_feats=True)
+            contents = [None]*5 + [contents] + [None]*(17-5)    
+            lats = lats + self.avg_latent.unsqueeze(0)
+        
+        # add delta_latent
+        lats += self.delta_latent
 
-        if self.eval_path_length:
-            lats.requires_grad = True
-
-        lats = lats + self.avg_latent.reshape(1, 1, -1) + self.delta_latent
         # truncation
         truncation = kwargs.get('truncation', 1.0)
         if truncation < 1.0:
-            lats = self.avg_latent.reshape(1, 1, -1) * (1. - truncation) + (lats * truncation)
+            lats = self.avg_latent.unsqueeze(0) * (1. - truncation) + (lats * truncation)
 
         self.ori_lats = lats
 
-        if self.modulation is not None:
-            if self.encoder_type == 'E4E':
-                try:
-                    del self.feats
-                    torch.cuda.empty_cache()
-                except:
-                    pass
-                self.feats = []
-                for i in range(4):
-                    feat = self.feats_conv[i](feats[i])
-                    self.feats.append(feat)
-            else:
-                self.feats = feats
-            
-            try:
-                del self.lats
-                torch.cuda.empty_cache()
-            except:
-                pass
-            self.lats = lats
-            
-            conditions = self.feats2condition(self.feats)
-            cond_ind = [(2 * (k + 2)) + 1 for k in range(len(conditions))]
-            out, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True,
-                                    conditions=conditions, cond_layers=cond_ind, cond_type=self.modulation_type,
-                                    callback=self.feats2condition_callback,
-                                    align_aug=True if self.randomTransform is not None else False)
-
-            if self.blend_with_gen:
-                if self.skip_SA:
-                    with torch.no_grad():
-                        gen, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True)
-                        out = gen.detach()
-
-                alpha_scale = self.blending_mask()
-                for i in range(self.blend_cnt):
-                    out = self.blend(x.detach(), out, detach=False, alpha_scale=alpha_scale)
-
-        else:
-            out, _ = self.generator(lats, input_is_tensor=True, input_is_latent=True)
-
+        out = self.generate(lats, feats, x)
 
         return out, lats
     
