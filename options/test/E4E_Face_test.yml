@@ -1,0 +1,52 @@
+# general settings
+name: OOD_faceGAN_e4e
+save_dir: ./results
+
+datasets:
+  val_0:
+    dataroot: /dataset/xinyang/newdata_backup/datasets/tests
+
+# network structures
+network_g:
+  type: ood_faceGAN_e4e
+  out_size: 1024
+  style_dim: 512
+  StyleGAN_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
+  StyleGAN_pth_key: g_ema
+  avg_latent_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f_avg_latent.pth
+  E4E_pth: checkpoints/pretrained_models/StyleGAN2/e4e_ffhq_encode.pt
+  encoder: E4E
+  enable_modulation: true
+  warp_scale: 0.08
+  cycle_align: 2  
+  blend_with_gen: true
+  ModSize: 256
+
+edit:
+  direction: 'smile'
+  strength: 1 
+
+# path
+path:
+  pretrain_network_g: /dataset/xinyang/newdata_backup/workspace/OOD-GAN-inversion/experiments/OOD_faceGAN_e4e/models/net_g_410000.pth
+  param_key_g: 'params_ema'
+  strict_load_g: false
+
+# validation settings
+metrics:
+  lpips:
+    type: calculate_lpips
+    crop_border: 2
+    test_y_channel: true
+    model_path: checkpoints/pretrained_models/lpips/alex.pth
+    better: lower
+  psnr:
+    type: calculate_psnr
+    crop_border: 2
+    test_y_channel: true
+    better: higher
+  ssim:
+    type: calculate_ssim
+    crop_border: 2
+    test_y_channel: true
+    better: higher

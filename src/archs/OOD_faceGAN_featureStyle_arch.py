@@ -145,19 +145,16 @@ class ood_faceGAN_FeatureStyle(nn.Module):
             self.progressiveStageSteps = [progressiveStart + progressiveStep * i for i in
                                           range(self.style_cnt)]
 
+    def fix_module_list(self):
+        # Fix modulation layers
+        fix_list = []
+        return fix_list
+
     def update_stage(self, step, logger=None):
         if len(self.progressiveStageSteps) > 0:
             milestone = self.progressiveStageSteps[0]
             while step > milestone:
                 self.progressiveStageSteps.pop(0)
-
-                # progressive W training
-                if self.encoder.progressive_stage.value < self.style_cnt:
-                    model_stage = self.encoder.progressive_stage
-                    next_stage = ProgressiveStage(model_stage.value + 1).name
-                    self.encoder.progressive_stage = ProgressiveStage[next_stage]
-                    if logger is not None:
-                        logger.info(f'encoder stage: {ProgressiveStage[next_stage]}')
 
                 # progressive Mod training
                 if self.modulation is not None and len(self.progressiveModSize) > 0 and self.ModSize < \
@@ -165,6 +162,7 @@ class ood_faceGAN_FeatureStyle(nn.Module):
                     self.ModSize = self.progressiveModSize.pop(0)
                     if logger is not None:
                         logger.info(f'modulation size: {self.ModSize}')
+                        logger.info(f'fix layers: {self.fix_module_list()}')
 
                 if len(self.progressiveStageSteps) > 0:
                     milestone = self.progressiveStageSteps[0]
