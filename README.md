@@ -21,12 +21,23 @@ In this paper, we propose a novel framework that enhances the fidelity of human 
 
 </details>
 
+## Training
+
+```bash
+python ./run_train.py --opt ./options/train/E4E_Face.yml
+```
+
+## Inference
+
+```bash
+python ./run_ood_faceGAN_inversion.py --opt ./options/test/E4E_Face_test.yml
+```
+
 ## 🚧 Todo
 
-- [ ] Release the training and inference codes
-- [ ] Release the guidance documents for manipulation
-
-Coming soon!
+- [x] Release the training and inference codes
+- [x] Release the guidance documents for inversion and attribute manipulation
+- [ ] Release the guidance for real-world image editing
 
 ## 📍 Citation 
 
