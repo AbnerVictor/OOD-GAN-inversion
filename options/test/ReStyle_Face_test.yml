@@ -1,5 +1,5 @@
 # general settings
-name: OOD_faceGAN_e4e
+name: OOD_faceGAN_ReStyle
 
 save_dir: ./results
 directions_dir: ./directions
@@ -16,14 +16,15 @@ datasets:
 
 # network structures
 network_g:
-  type: ood_faceGAN_e4e
+  type: ood_faceGAN_restyle
   out_size: 1024
   style_dim: 512
   StyleGAN_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
   StyleGAN_pth_key: g_ema
   avg_latent_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f_avg_latent.pth
-  E4E_pth: checkpoints/pretrained_models/StyleGAN2/e4e_ffhq_encode.pt
-  encoder: E4E
+  ReStyle_pth: checkpoints/pretrained_models/StyleGAN2/restyle_e4e_ffhq_encode.pt
+  encoder: ReStyle
+  enc_cycle: 5
   enable_modulation: true
   warp_scale: 0.08
   cycle_align: 2  
@@ -32,7 +33,7 @@ network_g:
 
 # path
 path:
-  pretrain_network_g: /dataset/xinyang/newdata_backup/workspace/OOD-GAN-inversion/experiments/OOD_faceGAN_e4e/models/net_g_410000.pth
+  pretrain_network_g: /dataset/xinyang/newdata_backup/workspace/OOD-GAN-inversion/experiments/OOD_faceGAN_restyle/models/net_g_792000.pth
   param_key_g: 'params_ema'
   strict_load_g: false
 

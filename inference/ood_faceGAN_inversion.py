@@ -1,6 +1,10 @@
 from src.archs.OOD_faceGAN_e4e_arch import ood_faceGAN_e4e
 from src.archs.OOD_faceGAN_featureStyle_arch import ood_faceGAN_FeatureStyle
 from src.archs.OOD_faceGAN_restyle_arch import ood_faceGAN_restyle
+
+from basicsr.metrics import calculate_psnr, calculate_ssim
+from src.metrics import calculate_lpips, calculate_identity
+
 from basicsr.utils import tensor2img, img2tensor
 import torch
 import torch.nn.functional as F
@@ -42,11 +46,20 @@ def load_model(opts):
 
     return model
 
-def load_files_from_path(opt):
+def load_files_from_path(opt, directions_dir=None):
     data_root = opt['dataroot']
     im_list = os.listdir(data_root)
     im_list = sorted(im_list, key=lambda x: (x[:-4]))
-    return [os.path.join(data_root, im) for im in im_list]
+    im_list = [os.path.join(data_root, im) for im in im_list]
+
+    editing = opt.get('editing', None)
+    if editing is not None:
+        direction = np.load(osp.join(directions_dir, editing['direction']+'.npy'))
+        direction = torch.tensor(direction, dtype=torch.float32).unsqueeze(0) * editing['intensity']
+    else:
+        direction = torch.tensor(0.)
+    
+    return im_list, direction
 
 def save_img_to(tensor, name='vis', root=None, ten2img=True):
     if not osp.isdir(root):
@@ -55,11 +68,8 @@ def save_img_to(tensor, name='vis', root=None, ten2img=True):
         img = tensor2img(tensor, rgb2bgr=True, min_max=(-1, 1))
     else:
         img = tensor
-
-    import pdb
-    pdb.set_trace()
-
     cv2.imwrite(osp.join(root, name), img)
+    return img
     
 def extract_masks(aligns):
     try:
@@ -76,10 +86,50 @@ def extract_masks(aligns):
         masks = None
     return masks
 
+def eval(cv2gt, cv2res, metrics=None, opt=None):
+    if metrics is None:
+        metrics = {
+            'psnr': [],
+            'ssim': [],
+            'lpips': [],
+            'identity': []
+        }
+    
+    lpips = opt.get('lpips', None)
+    ssim = opt.get('ssim', None)
+    psnr = opt.get('psnr', None)
+    identity = opt.get('identity', None)
+
+    # cal lpips
+    if lpips:
+        metrics['lpips'].append(calculate_lpips(cv2gt, cv2res, crop_border=lpips['crop_border'], test_y_channel=lpips['test_y_channel']))
+    else:
+        metrics['identity'].append(0)
+
+    if ssim:
+        metrics['ssim'].append(calculate_ssim(cv2gt, cv2res, crop_border=ssim['crop_border'], test_y_channel=ssim['test_y_channel']))
+    else:
+        metrics['identity'].append(0)
+
+    if psnr:
+        metrics['psnr'].append(calculate_psnr(cv2gt, cv2res, crop_border=psnr['crop_border'], test_y_channel=psnr['test_y_channel']))
+    else:
+        metrics['identity'].append(0)
+
+    if identity:
+        metrics['identity'].append(calculate_identity(cv2gt, cv2res, crop_border=identity['crop_border'], test_y_channel=identity['test_y_channel'], net=identity['model_path']))
+    else:
+        metrics['identity'].append(0)
+    
+    return metrics
+
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--opt', default=None, required=True, help='the testing option file path')
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
 
     with open(args.opt) as f:
         opts = yaml.load(f, Loader=yaml.FullLoader)
@@ -88,16 +138,22 @@ if __name__=="__main__":
     model = load_model(opts)
 
     # load predefined editing directions
+    directions_dir = opts.get('directions_dir', './directions')
 
     save_root = opts.get('save_dir', './results')
     save_root = os.path.join(save_root, opts['name'])
 
     for dataset_name, dataset_opt in opts['datasets'].items():
-        files = load_files_from_path(dataset_opt)
+        files, edit_direction = load_files_from_path(dataset_opt, directions_dir)
         save_dir = os.path.join(save_root, dataset_name)
+        
+        model = model.cuda()
+        model.delta_latent.data += edit_direction.cuda()
 
         pbar = tqdm(total=len(files))
+        
         times = []
+        metrics = None
 
         for file in files:
             cv2im = cv2.imread(file) / 255.0
@@ -107,7 +163,6 @@ if __name__=="__main__":
 
             # to cuda
             input_im = input_im.cuda()
-            model = model.cuda()
 
             with torch.no_grad():
                 start = time.time()
@@ -116,10 +171,22 @@ if __name__=="__main__":
                 end = time.time()
                 times.append(end-start)
 
-                save_img_to(inversion_im, name=os.path.split(file)[-1], root=f'{save_dir}/inversion')
+                result = save_img_to(inversion_im, name=os.path.split(file)[-1], root=f'{save_dir}/inversion')
+
+                # evaluations
+                metrics = eval(cv2im * 255.0, result, metrics, opts['metrics'])
 
                 masks = extract_masks(model.aligns)
                 save_img_to(masks, name=os.path.split(file)[-1], root=f'{save_dir}/masks', ten2img=False)
 
             pbar.update(1)
+
+        model.delta_latent.data -= edit_direction.cuda()
+
+        # print summerizes
+        logger.info('Average process time of %s: %f', dataset_name, np.mean(np.array(times)))
+        logger.info('Average PSNR of %s: %f', dataset_name, np.mean(np.array(metrics['psnr'])))
+        logger.info('Average SSIM of %s: %f', dataset_name, np.mean(np.array(metrics['ssim'])))
+        logger.info('Average LPIPS of %s: %f', dataset_name, np.mean(np.array(metrics['lpips'])))
+        logger.info('Average ID_SCORE of %s: %f', dataset_name, np.mean(np.array(metrics['identity'])))
 
