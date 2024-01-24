@@ -1,0 +1,229 @@
+# general settings
+name: OOD_faceGAN_e4e
+model_type: ood_faceGAN_Model
+num_gpu: 1  # set num_gpu: 0 for cpu mode
+manual_seed: 0
+is_mimo: true
+
+# dist: true
+# find_unused_parameters: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: FFHQ
+    type: Face_Dataset
+    dataroot_gt: ~
+    dataroot_gt_list: ['/dataset/xinyang/newdata_backup/datasets/FFHQ/images1024x1024']
+    mode: mix_id
+    gt_size: 1024
+    max_length: 1
+    fix_input: false
+    random_seed: 0
+    io_backend:
+      type: disk
+    use_hflip: true
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 1
+    batch_size_per_gpu: 2
+    dataset_enlarge_ratio: 100 # 100
+    prefetch_mode: ~
+
+  val:
+    name: CelebAHQ_test
+    type: Face_Dataset
+    dataroot_gt: /dataset/xinyang/newdata_backup/datasets/Overfit
+    mode: mix_id
+    gt_size: 1024
+    max_length: 1
+    fix_input: false
+    random_seed: 0
+    io_backend:
+      type: disk
+    use_hflip: false
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+
+# network structures
+network_g:
+  type: ood_faceGAN_e4e
+  out_size: 1024
+  style_dim: 512
+  StyleGAN_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
+  StyleGAN_pth_key: g_ema
+  avg_latent_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f_avg_latent.pth
+  E4E_pth: checkpoints/pretrained_models/StyleGAN2/e4e_ffhq_encode.pt
+  encoder: E4E
+  enable_modulation: true
+  modulation_type: NOISE
+  warp_scale: 0.08
+  cycle_align: 2  
+  blend_with_gen: true
+  ModSize: ~
+  progressiveModSize: [32, 64, 128, 256]
+  progressiveModFrozen: false
+  ModDropout_p: 0.0
+  stage: Inference
+  progressiveStart: 2000 # 5000
+  progressiveStep: 4000 # 25000
+  progressiveStageSteps: ~ # leave it none for automatic gensssseration
+
+network_d:
+  type: StyleGAN2Discriminator_mod
+  out_size: 1024
+  channel_multiplier: 2
+  resample_kernel: [1, 3, 3, 1]
+
+network_d2:
+  type: LatentDiscrinimator
+  chn: 18
+  dim: 512
+  n_mlp: 8
+  hidden_chn: 4
+
+# path
+path:
+  pretrain_network_g: ~ 
+  param_key_g: 'params_ema'
+  strict_load_g: false
+  pretrain_network_d: ~ 
+  param_key_d: 'params'
+  strict_load_d: true
+  resume_state: ~
+  
+# training settings
+train:
+  optim_g:
+    type: Adam
+    lr: !!float 2e-5
+    generator_lr_decay: !!float 1.0
+
+  optim_d:
+    type: Adam
+    lr: !!float 2e-5
+
+  optim_d2:
+    type: Adam
+    lr: !!float 2e-6
+
+  scheduler:
+    type: MultiStepLR
+    milestones: 15000
+    gamma: 0.75
+
+  total_iter: 1800000
+  warmup_iter: -1  # no warm up
+
+  # fix generator before startup_iter
+  startup_iter: 1800000
+  fix_and_grad: 
+    fix: ['generator', 'avg_latent', 'encoder'] # , 'alignment', 'residual_encoder'
+    grad: []
+
+  autocast: false
+  skip_latent_g: true
+  skip_gen_g: false
+  which_gt: gt
+  grad_clip_norm: 999.0
+
+  # losses
+  gan_opt:
+    type: GANLoss
+    gan_type: wgan_softplus
+    loss_weight: !!float 5e-1
+
+  # r1 regularization for discriminator
+  r1_reg_weight: 10
+  # path length regularization for generator
+  path_batch_shrink: 2
+  path_reg_weight: 2
+
+  net_g_reg_every: 99999999 # 4
+  net_d_reg_every: 99999999 # 16
+  mixing_prob: 0.9
+
+  net_d_iters: 1
+  net_d_init_iters: 0
+
+  pix_opt:
+    type: MSELoss
+    loss_weight: 1.0
+
+  id_opt:
+    type: IDLoss
+    loss_weight: 0.1
+    ref_loss_weight: 0.0
+    ckpt: checkpoints/pretrained_models/ir_se/model_ir_se50.pth
+
+  perceptual_opt:
+      type: PerceptualLoss
+      layer_weights:
+        # before relu
+        'conv1_2': 0.1
+        'conv2_2': 0.1
+        'conv3_4': 1
+        'conv4_4': 1
+        'conv5_4': 1
+      vgg_type: vgg19
+      use_input_norm: true
+      perceptual_weight: !!float 1.0
+      style_weight: 50
+      range_norm: true
+      criterion: l1
+
+  mask_opt:
+    type: MaskLoss
+    loss_weight: 5.0
+    loss_func:
+      binary: [32, 64, 128, 256, 1024]
+      area:
+        '32': 0.30
+        '64': 0.30
+        '128': 0.20
+        '256': 0.20
+        '1024': 0.20
+      target: 1
+      binary_weight: !!float 4e-2
+
+# validation settings
+val:
+  val_freq: !!float 2e3
+  save_img: true
+  save_lq_and_gt: true
+  pbar: true
+
+  metrics:
+    lpips:
+      type: calculate_lpips
+      crop_border: 2
+      test_y_channel: true
+      model_path: checkpoints/pretrained_models/lpips/alex.pth
+      better: lower
+    psnr:
+      type: calculate_psnr
+      crop_border: 2
+      test_y_channel: true
+      better: higher
+    ssim:
+      type: calculate_ssim
+      crop_border: 2
+      test_y_channel: true
+      better: higher
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 2e3
+  use_tb_logger: true
+  wandb:
+    project: ~ # reproduce-project
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

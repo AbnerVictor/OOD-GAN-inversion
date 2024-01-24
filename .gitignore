@@ -1,0 +1,37 @@
+/.idea/
+/tb_logger/*
+*__pycache__
+/results/*
+/experiments/*
+/checkpoints/*
+/datasets/*
+trash
+
+# Log
+# *.log
+*.csv
+torchprofiler
+run_server7.py
+run_test_server7.py
+tb_finetune_logger
+# Package Files #
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+*.pyc
+*TestData*
+
+*.egg-info
+*.EGG-INFO
+*build
+
+*.vscode
+**.engine
+**.npy
+*.png
+*.jpg
+profile_main.py
+Graphs/arch.pptx

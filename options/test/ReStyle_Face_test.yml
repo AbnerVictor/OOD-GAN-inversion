@@ -1,0 +1,54 @@
+# general settings
+name: OOD_faceGAN_ReStyle
+
+save_dir: ./results
+directions_dir: ./directions
+
+datasets:
+  val_0:
+    dataroot: /dataset/xinyang/newdata_backup/datasets/tests
+    editing:
+      direction: 'Smiling'
+      intensity: 2 
+
+  val_1:
+    dataroot: /dataset/xinyang/newdata_backup/datasets/tests
+
+# network structures
+network_g:
+  type: ood_faceGAN_restyle
+  out_size: 1024
+  style_dim: 512
+  StyleGAN_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f.pth
+  StyleGAN_pth_key: g_ema
+  avg_latent_pth: checkpoints/pretrained_models/StyleGAN2/stylegan2-ffhq-config-f_avg_latent.pth
+  ReStyle_pth: checkpoints/pretrained_models/StyleGAN2/restyle_e4e_ffhq_encode.pt
+  encoder: ReStyle
+  enc_cycle: 5
+  enable_modulation: true
+  warp_scale: 0.08
+  cycle_align: 2  
+  blend_with_gen: true
+  ModSize: 256
+
+# path
+path:
+  pretrain_network_g: /dataset/xinyang/newdata_backup/workspace/OOD-GAN-inversion/experiments/OOD_faceGAN_restyle/models/net_g_792000.pth
+  param_key_g: 'params_ema'
+  strict_load_g: false
+
+# validation settings
+metrics:
+  lpips:
+    crop_border: 2
+    test_y_channel: false
+  psnr:
+    crop_border: 2
+    test_y_channel: false
+  ssim:
+    crop_border: 2
+    test_y_channel: false
+  identity:
+    crop_border: 2
+    test_y_channel: false
+    model_path: checkpoints/pretrained_models/ir_se/model_ir_se50.pth
