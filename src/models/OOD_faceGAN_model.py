@@ -813,6 +813,8 @@ class ood_faceGAN_Model(StyleGAN2Model):
         if use_pbar:
             pbar = tqdm(total=len(dataloader), unit='image')
 
+        val_cnt = 0
+        
         for idx, val_data in enumerate(dataloader):
             if self.is_mimo:
                 gt_pth = val_data['gt_path'][0][0]
@@ -906,6 +908,8 @@ class ood_faceGAN_Model(StyleGAN2Model):
                     for name, opt_ in self.opt['val']['metrics'].items():
                         self.metric_results[name] += calculate_metric(metric_data, opt_)
 
+            val_cnt += 1
+            
             if use_pbar:
                 pbar.update(1)
                 pbar.set_description(f'Test {img_name}')
@@ -915,7 +919,7 @@ class ood_faceGAN_Model(StyleGAN2Model):
 
         if with_metrics:
             for metric in self.metric_results.keys():
-                self.metric_results[metric] /= (idx + 1)
+                self.metric_results[metric] /= val_cnt
                 # update the best metric result
                 self._update_best_metric_result(dataset_name, metric, self.metric_results[metric], current_iter)
 
