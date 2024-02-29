@@ -201,7 +201,7 @@ val:
       type: calculate_lpips
       crop_border: 2
       test_y_channel: true
-      model_path: checkpoints/pretrained_models/lpips/alex.pth
+      # model_path: checkpoints/pretrained_models/lpips/alex.pth
       better: lower
     psnr:
       type: calculate_psnr
